@@ -100,6 +100,57 @@ test('TMDB 后端代理转发并整理候选影片', async () => {
   assert.equal(upstream.searchParams.get('language'), 'zh-CN');
 });
 
+test('头像名字、双人评分和评论完整同步', async () => {
+  const initial = await request('/api/state');
+  assert.equal(initial.body.profiles.A.name, '雨');
+  assert.equal(initial.body.profiles.B.name, '奇');
+
+  await request('/api/movies', movie('A', 303, '讨论电影'));
+  const renamed = await request('/api/profile', {
+    method: 'POST', body: JSON.stringify({ owner: 'A', name: '小雨' }),
+  });
+  assert.equal(renamed.body.profiles.A.name, '小雨');
+
+  const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const avatar = await request('/api/profile/avatar', {
+    method: 'POST', body: JSON.stringify({ owner: 'A', image: pixel }),
+  });
+  assert.match(avatar.body.profiles.A.avatarUrl, /^\/api\/profile\/A\/avatar\?v=1$/);
+  const image = await fetch(base + avatar.body.profiles.A.avatarUrl);
+  assert.equal(image.status, 200);
+  assert.match(image.headers.get('content-type'), /^image\/png/);
+
+  await request('/api/ratings', {
+    method: 'POST', body: JSON.stringify({ owner: 'A', tmdbId: 303, score: 5 }),
+  });
+  const rated = await request('/api/ratings', {
+    method: 'POST', body: JSON.stringify({ owner: 'B', tmdbId: 303, score: 4 }),
+  });
+  assert.equal(rated.body.ratings.length, 2);
+  assert.deepEqual(rated.body.ratings.map(item => item.score).sort(), [4, 5]);
+
+  await request('/api/comments', {
+    method: 'POST', body: JSON.stringify({ owner: 'A', tmdbId: 303, body: '雨的评论' }),
+  });
+  const commented = await request('/api/comments', {
+    method: 'POST', body: JSON.stringify({ owner: 'B', tmdbId: 303, body: '奇的评论' }),
+  });
+  assert.equal(commented.body.comments.length, 2);
+  const comment = commented.body.comments.find(item => item.owner === 'A');
+  const forbidden = await request(`/api/comments/${comment.id}`, {
+    method: 'DELETE', body: JSON.stringify({ owner: 'B' }),
+  });
+  assert.equal(forbidden.response.status, 404);
+
+  const movieRow = commented.body.movies.find(item => item.tmdbId === 303);
+  const removed = await request(`/api/movies/${movieRow.id}`, {
+    method: 'DELETE', body: JSON.stringify({ owner: 'A' }),
+  });
+  assert.deepEqual(removed.body.ratings, []);
+  assert.deepEqual(removed.body.comments, []);
+  assert.equal(removed.body.profiles.A.name, '小雨', '删除影片不能删除个人资料');
+});
+
 test('固定雨奇双人片单与抽签完整流程', async () => {
   const empty = await request('/api/state');
   assert.deepEqual(empty.body.movies, []);

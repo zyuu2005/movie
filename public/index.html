@@ -22,7 +22,8 @@
     <div id="headerRoom" class="header-room hidden">
       <span class="sync-dot" id="syncDot"></span>
       <span id="syncText">已同步</span>
-      <button class="text-button" id="switchIdentityBtn">切换身份</button>
+      <button class="profile-button" id="profileBtn" title="设置头像和名字"><span id="headerAvatar"></span><span id="profileBtnName">雨</span></button>
+      <button class="text-button" id="switchIdentityBtn">切换</button>
     </div>
   </header>
 
@@ -116,7 +117,7 @@
         <summary>片单管理 <span>重置已看标记或清空全部片单</span></summary>
         <div class="tools-content">
           <div><p>让所有电影重新参与抽签</p><button id="clearWatchedBtn" class="secondary-button">重置全部已看标记</button></div>
-          <div class="danger-tool"><p>删除雨、奇的全部影片及抽签结果</p><button id="clearAllBtn" class="danger-button">清空全部片单</button></div>
+          <div class="danger-tool"><p>删除全部影片、评分、评论及抽签结果，保留头像名字</p><button id="clearAllBtn" class="danger-button">清空全部片单</button></div>
         </div>
       </details>
     </section>
@@ -127,10 +128,32 @@
     <form method="dialog">
       <div class="dialog-icon">!</div>
       <h2>确定清空全部片单吗？</h2>
-      <p>这会删除雨、奇的所有影片和抽签结果，且无法恢复。请在下方输入「清空全部片单」确认。</p>
+      <p>这会删除雨、奇的所有影片、评分、评论和抽签结果，且无法恢复。头像和名字会保留。请输入「清空全部片单」确认。</p>
       <input id="confirmInput" type="text" placeholder="清空全部片单" autocomplete="off">
       <div class="dialog-actions"><button value="cancel" class="secondary-button">再想想</button><button id="confirmClearBtn" value="default" class="danger-button" disabled>确认清空</button></div>
     </form>
+  </dialog>
+
+  <dialog id="profileDialog" class="profile-dialog">
+    <form method="dialog" id="profileForm">
+      <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
+      <p class="eyebrow">YOUR PROFILE</p>
+      <h2>我的头像和名字</h2>
+      <p>资料会保存在共享数据库，其他设备也能看到。</p>
+      <div class="avatar-setting">
+        <div id="profileAvatarPreview" class="avatar avatar-xl"></div>
+        <label class="secondary-button avatar-upload">选择图片<input id="avatarInput" type="file" accept="image/jpeg,image/png,image/webp" hidden></label>
+        <small>自动裁剪为正方形并压缩，最大 5 MB</small>
+      </div>
+      <label class="profile-name-label" for="profileNameInput">显示名字</label>
+      <input id="profileNameInput" class="profile-name-input" type="text" maxlength="12" required>
+      <button id="saveProfileBtn" type="submit" class="primary-button full-button">保存资料</button>
+    </form>
+  </dialog>
+
+  <dialog id="discussionDialog" class="discussion-dialog">
+    <button class="dialog-close" id="closeDiscussionBtn" aria-label="关闭">×</button>
+    <div id="discussionContent"></div>
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js" defer></script>

@@ -6,7 +6,7 @@ const OWNER_NAMES = { A: '雨', B: '奇' };
 const IDENTITY_KEY = 'movieNight.identity';
 const TMDB_KEY = 'movieNight.tmdbKey';
 
-// 本地存储只保存界面偏好、当前身份和 TMDB Key，片单始终在服务端。
+// 本地只记身份和 TMDB Key；头像、名字、评分、评论均放服务端，换设备不丢失。
 const storage = {
   get(key) { try { return localStorage.getItem(key); } catch { return null; } },
   set(key, value) { try { localStorage.setItem(key, value); } catch { /* 当前会话仍可使用 */ } },
@@ -16,6 +16,7 @@ const storage = {
 const state = {
   identity: '', data: null, tab: 'common', pollTimer: null,
   searchResults: [], drawing: false, requestId: 0,
+  discussionTmdb: null, avatarData: '',
 };
 
 function escapeHTML(value) {
@@ -32,6 +33,19 @@ function posterMarkup(movie, className) {
   const url = posterUrl(movie.posterPath);
   if (url) return `<img class="${className}" src="${url}" alt="${escapeHTML(movie.title)}海报" loading="lazy" referrerpolicy="no-referrer">`;
   return `<div class="${className} poster-fallback">${escapeHTML(movie.title)}</div>`;
+}
+
+function profileName(owner) {
+  return state.data?.profiles?.[owner]?.name || OWNER_NAMES[owner] || owner;
+}
+
+function avatarMarkup(owner, className = '', imageOverride = null) {
+  const profile = state.data?.profiles?.[owner];
+  const url = imageOverride !== null ? imageOverride : profile?.avatarUrl;
+  const name = profileName(owner);
+  return `<span class="avatar ${className}">${url
+    ? `<img src="${escapeHTML(url)}" alt="${escapeHTML(name)}的头像">`
+    : escapeHTML(name.slice(0, 1))}</span>`;
 }
 
 let toastTimer;
@@ -125,18 +139,96 @@ function startPolling() {
   }, 2500);
 }
 
+// ---------- 个人资料 ----------
+function renderProfile() {
+  if (!state.data) return;
+  $('#headerAvatar').innerHTML = avatarMarkup(state.identity);
+  $('#profileBtnName').textContent = profileName(state.identity);
+  for (const owner of ['A', 'B']) {
+    const tab = $(`.list-tabs [data-tab="${owner}"]`);
+    tab.innerHTML = `${escapeHTML(profileName(owner))}的片单 <b id="${owner.toLowerCase()}Count">0</b>`;
+  }
+}
+
+function openProfile() {
+  state.avatarData = '';
+  $('#profileNameInput').value = profileName(state.identity);
+  refreshAvatarPreview();
+  $('#profileDialog').showModal();
+}
+
+function refreshAvatarPreview() {
+  const preview = $('#profileAvatarPreview');
+  const url = state.avatarData || state.data.profiles[state.identity].avatarUrl;
+  preview.innerHTML = url
+    ? `<img src="${escapeHTML(url)}" alt="头像预览">`
+    : escapeHTML(profileName(state.identity).slice(0, 1));
+}
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = url;
+  });
+}
+
+async function prepareAvatar(file) {
+  if (!file) return;
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    toast('请选择 JPG、PNG 或 WebP 图片');
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    toast('图片不能超过 5 MB');
+    return;
+  }
+  try {
+    const image = await loadImage(await readFile(file));
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const side = Math.min(image.width, image.height);
+    const sx = (image.width - side) / 2;
+    const sy = (image.height - side) / 2;
+    canvas.getContext('2d').drawImage(image, sx, sy, side, side, 0, 0, 256, 256);
+    state.avatarData = canvas.toDataURL('image/jpeg', 0.82);
+    refreshAvatarPreview();
+  } catch {
+    toast('图片读取失败，请换一张试试');
+  }
+}
+
 // ---------- 片单与抽签渲染 ----------
 function getCommonMovies() {
   if (!state.data) return [];
   return state.data.common.map(pair => {
-    const ownMovie = pair[state.identity];
     const otherOwner = state.identity === 'A' ? 'B' : 'A';
-    return { ...ownMovie, pairB: pair[otherOwner] };
+    return { ...pair[state.identity], pairB: pair[otherOwner] };
   });
+}
+
+function movieRatings(tmdbId) {
+  return state.data.ratings.filter(rating => rating.tmdbId === tmdbId);
+}
+
+function movieComments(tmdbId) {
+  return state.data.comments.filter(comment => comment.tmdbId === tmdbId);
 }
 
 function renderRoom() {
   if (!state.data) return;
+  renderProfile();
   const movies = state.data.movies;
   $('#commonCount').textContent = state.data.common.length;
   $('#aCount').textContent = movies.filter(movie => movie.owner === 'A').length;
@@ -145,6 +237,7 @@ function renderRoom() {
   renderDraw();
   renderList();
   renderSearchResults();
+  if ($('#discussionDialog').open) renderDiscussion();
 }
 
 function renderDraw() {
@@ -164,10 +257,11 @@ function renderDraw() {
       <h2>${escapeHTML(draw.title)}</h2>
       <p class="draw-meta">${escapeHTML(draw.year || '年份未知')} · 今晚就看这一部</p>
       <p class="draw-overview">${escapeHTML(draw.overview || '没有简介，也不妨碍今晚的期待。')}</p>
-      <p class="draw-by">由 ${escapeHTML(OWNER_NAMES[draw.drawnBy] || draw.drawnBy)} 抽取 · 抽签不会自动标记已看</p>
+      <p class="draw-by">由 ${escapeHTML(profileName(draw.drawnBy))} 抽取 · 抽签不会自动标记已看</p>
     </div>
     <div class="draw-actions">
       ${watchedButton}
+      <button class="secondary-button" data-draw-discuss="${draw.tmdbId}">评分与评论</button>
       <button class="draw-button" id="redrawBtn"><span class="draw-spark">✦</span> 再抽一次</button>
     </div>`;
 }
@@ -177,14 +271,14 @@ function movieCard(movie, isCommon = false) {
   const ownWatched = movie.watched;
   const otherWatched = isCommon && movie.pairB.watched;
   const bothWatched = isCommon && ownWatched && otherWatched;
-  const badges = isCommon
+  const ratings = movieRatings(movie.tmdbId);
+  const comments = movieComments(movie.tmdbId);
+  const average = ratings.length ? (ratings.reduce((sum, item) => sum + item.score, 0) / ratings.length).toFixed(1) : '';
+  let badges = isCommon
     ? `<span class="badge">共同想看</span>${bothWatched ? '<span class="badge watched-badge">双方已看完</span>' : (ownWatched || otherWatched ? '<span class="badge watched-badge">一方已看</span>' : '')}`
     : `${movie.watched ? '<span class="badge watched-badge">已看完</span>' : '<span class="badge">未看</span>'}`;
-  const actions = canManage ? `
-    <div class="movie-actions">
-      <button data-watch-id="${movie.id}" data-watched="${!movie.watched}">${movie.watched ? '↶ 取消已看' : '✓ 标记已看完'}</button>
-      <button class="delete-movie" data-delete-id="${movie.id}" data-title="${escapeHTML(movie.title)}" aria-label="删除${escapeHTML(movie.title)}">删除</button>
-    </div>` : '<div class="readonly-note">由对方管理 · 你可以查看</div>';
+  if (average) badges += `<span class="badge discussion-badge">★ ${average}</span>`;
+  if (comments.length) badges += `<span class="badge">💬 ${comments.length}</span>`;
   return `<article class="movie-card ${isCommon ? (bothWatched ? 'watched' : '') : (movie.watched ? 'watched' : '')}">
     ${posterMarkup(movie, 'movie-poster')}
     <div class="movie-info">
@@ -192,7 +286,11 @@ function movieCard(movie, isCommon = false) {
       <p class="movie-year">${escapeHTML(movie.year || '年份未知')}</p>
       <p class="movie-overview">${escapeHTML(movie.overview || '这部电影还没有简介。')}</p>
       <div class="movie-badges">${badges}</div>
-      ${actions}
+      <div class="movie-actions">
+        <button class="discuss-button" data-discuss-tmdb="${movie.tmdbId}">★ 评分与评论</button>
+        ${canManage ? `<button data-watch-id="${movie.id}" data-watched="${!movie.watched}">${movie.watched ? '↶ 取消已看' : '✓ 标记已看完'}</button>
+        <button class="delete-movie" data-delete-id="${movie.id}" data-title="${escapeHTML(movie.title)}" aria-label="删除${escapeHTML(movie.title)}">删除</button>` : ''}
+      </div>
     </div>
   </article>`;
 }
@@ -205,16 +303,71 @@ function renderList() {
     $('#listCaption').textContent = common.length ? '两个人都加入的电影会在这里相遇。' : '同一部电影分别被雨、奇加入后，就会自动出现在这里。';
   } else {
     movies = state.data.movies.filter(movie => movie.owner === state.tab);
-    $('#listCaption').textContent = state.tab === state.identity ? '这是你的片单，只有你可以修改自己的影片。' : '对方的片单仅可查看，各自管理自己的期待。';
+    $('#listCaption').textContent = state.tab === state.identity ? '这是你的片单，只有你可以修改自己的影片。' : '对方的片单仅可查看，也可以一起评分和评论。';
   }
   if (!movies.length) {
     const copy = state.tab === 'common'
       ? ['♡', '还没有共同的期待', '让对方也搜索并加入同一部电影吧']
-      : ['🎬', `${OWNER_NAMES[state.tab]}的片单还是空的`, state.tab === state.identity ? '从上方搜索第一部电影吧' : '等对方种下一点期待'];
+      : ['🎬', `${profileName(state.tab)}的片单还是空的`, state.tab === state.identity ? '从上方搜索第一部电影吧' : '等对方种下一点期待'];
     $('#movieList').innerHTML = `<div class="empty-list"><span>${copy[0]}</span><h3>${copy[1]}</h3><p>${copy[2]}</p></div>`;
     return;
   }
   $('#movieList').innerHTML = movies.map(movie => movieCard(movie, state.tab === 'common')).join('');
+}
+
+// ---------- 评分与评论 ----------
+function formatCommentTime(value) {
+  const date = new Date(`${String(value).replace(' ', 'T')}Z`);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
+function openDiscussion(tmdbId) {
+  state.discussionTmdb = Number(tmdbId);
+  renderDiscussion();
+  $('#discussionDialog').showModal();
+}
+
+function renderDiscussion() {
+  const tmdbId = state.discussionTmdb;
+  const movie = state.data?.movies.find(item => item.tmdbId === tmdbId);
+  if (!movie) {
+    if ($('#discussionDialog').open) $('#discussionDialog').close();
+    return;
+  }
+  const draft = $('#commentInput')?.value || '';
+  const ratings = movieRatings(tmdbId);
+  const comments = movieComments(tmdbId);
+  const ownRating = ratings.find(item => item.owner === state.identity)?.score || 0;
+  const average = ratings.length ? (ratings.reduce((sum, item) => sum + item.score, 0) / ratings.length).toFixed(1) : '—';
+  const partnerRatings = ['A', 'B'].map(owner => {
+    const score = ratings.find(item => item.owner === owner)?.score;
+    return `<div class="partner-rating">${avatarMarkup(owner)}<span>${escapeHTML(profileName(owner))}</span><b>${score ? `★ ${score}` : '未评分'}</b></div>`;
+  }).join('');
+  const stars = [1, 2, 3, 4, 5].map(score => `<button type="button" class="star-button ${score <= ownRating ? 'active' : ''}" data-score="${score}" aria-label="评 ${score} 星">★</button>`).join('');
+  const commentList = comments.length ? comments.map(comment => `
+    <article class="comment-item">
+      ${avatarMarkup(comment.owner)}
+      <div><div class="comment-meta"><strong>${escapeHTML(profileName(comment.owner))}</strong><time>${escapeHTML(formatCommentTime(comment.createdAt))}</time>
+      ${comment.owner === state.identity ? `<button data-delete-comment="${comment.id}">删除</button>` : ''}</div>
+      <p class="comment-text">${escapeHTML(comment.body)}</p></div>
+    </article>`).join('') : '<div class="empty-comments">还没有评论，看完来聊两句吧。</div>';
+
+  $('#discussionContent').innerHTML = `
+    <div class="discussion-hero">${posterMarkup(movie, 'movie-poster')}<div><p class="eyebrow">RATE & TALK</p><h2>${escapeHTML(movie.title)}</h2><p>${escapeHTML(movie.year || '年份未知')} · 两个人的观影小记录</p></div></div>
+    <div class="discussion-body">
+      <div class="rating-summary"><strong>${average}</strong><span>平均评分 · ${ratings.length} 人已评分</span></div>
+      <div class="partner-ratings">${partnerRatings}</div>
+      <div class="my-rating"><span>我的评分</span><div class="stars">${stars}</div></div>
+      <div class="comments-heading"><h3>评论</h3><span>${comments.length} 条</span></div>
+      <form id="commentForm" class="comment-form">
+        ${avatarMarkup(state.identity)}
+        <textarea id="commentInput" maxlength="500" placeholder="说说这部电影…" required></textarea>
+        <button class="secondary-button" type="submit">发表</button>
+      </form>
+      <div class="comment-list">${commentList}</div>
+    </div>`;
+  $('#commentInput').value = draft;
 }
 
 // ---------- TMDB 设置与后端代理搜索 ----------
@@ -241,10 +394,7 @@ async function searchMovies(query) {
   $('#searchResults').classList.add('hidden');
   $('#searchForm button').disabled = true;
   try {
-    // 浏览器只访问自己的后端，不直接请求 TMDB，避免 CORS。
-    const body = await api('/api/tmdb/search', {
-      method: 'POST', body: JSON.stringify({ apiKey: key, query }),
-    });
+    const body = await api('/api/tmdb/search', { method: 'POST', body: JSON.stringify({ apiKey: key, query }) });
     state.searchResults = body.results;
     if (!state.searchResults.length) {
       message.textContent = '没有找到相关电影，试试原名或更短的关键词。';
@@ -280,7 +430,7 @@ async function addMovie(index, button) {
   try {
     await applyMutation(api('/api/movies', {
       method: 'POST', body: JSON.stringify({ owner: state.identity, ...movie }),
-    }), `已把《${movie.title}》加入${OWNER_NAMES[state.identity]}的片单`);
+    }), `已把《${movie.title}》加入${profileName(state.identity)}的片单`);
   } catch { button.disabled = false; }
 }
 
@@ -316,6 +466,33 @@ $$('.identity-button').forEach(button => button.addEventListener('click', () => 
 $('#switchIdentityBtn').addEventListener('click', () => {
   storage.remove(IDENTITY_KEY);
   showIdentityPicker();
+});
+$('#profileBtn').addEventListener('click', openProfile);
+$('#avatarInput').addEventListener('change', event => {
+  prepareAvatar(event.target.files[0]);
+  event.target.value = '';
+});
+
+$('#profileForm').addEventListener('submit', async event => {
+  if (event.submitter?.value === 'cancel') return;
+  event.preventDefault();
+  const name = $('#profileNameInput').value.trim();
+  if (!name) { toast('名字不能为空'); return; }
+  $('#saveProfileBtn').disabled = true;
+  try {
+    if (state.avatarData) {
+      await applyMutation(api('/api/profile/avatar', {
+        method: 'POST', body: JSON.stringify({ owner: state.identity, image: state.avatarData }),
+      }));
+    }
+    await applyMutation(api('/api/profile', {
+      method: 'POST', body: JSON.stringify({ owner: state.identity, name }),
+    }));
+    $('#profileDialog').close();
+    toast('头像和名字已同步保存');
+  } catch { /* applyMutation 已提示 */ } finally {
+    $('#saveProfileBtn').disabled = false;
+  }
 });
 
 $('#saveApiKeyBtn').addEventListener('click', () => {
@@ -356,6 +533,8 @@ async function updateWatched(id, watched) {
 $('#movieList').addEventListener('click', event => {
   const watch = event.target.closest('[data-watch-id]');
   const remove = event.target.closest('[data-delete-id]');
+  const discuss = event.target.closest('[data-discuss-tmdb]');
+  if (discuss) openDiscussion(discuss.dataset.discussTmdb);
   if (watch) updateWatched(Number(watch.dataset.watchId), watch.dataset.watched === 'true').catch(() => {});
   if (remove && window.confirm(`确定从自己的片单删除《${remove.dataset.title}》吗？`)) {
     applyMutation(api(`/api/movies/${remove.dataset.deleteId}`, {
@@ -368,7 +547,35 @@ $('#drawBtn').addEventListener('click', drawMovie);
 $('#drawResult').addEventListener('click', event => {
   if (event.target.closest('#redrawBtn')) drawMovie();
   const watched = event.target.closest('[data-draw-watched]');
+  const discuss = event.target.closest('[data-draw-discuss]');
   if (watched) updateWatched(Number(watched.dataset.drawWatched), watched.dataset.watched === 'true').catch(() => {});
+  if (discuss) openDiscussion(discuss.dataset.drawDiscuss);
+});
+
+$('#closeDiscussionBtn').addEventListener('click', () => $('#discussionDialog').close());
+$('#discussionContent').addEventListener('click', event => {
+  const star = event.target.closest('[data-score]');
+  const remove = event.target.closest('[data-delete-comment]');
+  if (star) {
+    applyMutation(api('/api/ratings', {
+      method: 'POST',
+      body: JSON.stringify({ owner: state.identity, tmdbId: state.discussionTmdb, score: Number(star.dataset.score) }),
+    }), `已评 ${star.dataset.score} 星`).catch(() => {});
+  }
+  if (remove && window.confirm('确定删除这条评论吗？')) {
+    applyMutation(api(`/api/comments/${remove.dataset.deleteComment}`, {
+      method: 'DELETE', body: JSON.stringify({ owner: state.identity }),
+    }), '评论已删除').catch(() => {});
+  }
+});
+$('#discussionContent').addEventListener('submit', event => {
+  if (event.target.id !== 'commentForm') return;
+  event.preventDefault();
+  const body = $('#commentInput').value.trim();
+  if (!body) return;
+  applyMutation(api('/api/comments', {
+    method: 'POST', body: JSON.stringify({ owner: state.identity, tmdbId: state.discussionTmdb, body }),
+  }), '评论已发表').catch(() => {});
 });
 
 $('#clearWatchedBtn').addEventListener('click', () => {
@@ -392,7 +599,7 @@ $('#confirmClearBtn').addEventListener('click', event => {
   if ($('#confirmInput').value.trim() !== '清空全部片单') return;
   applyMutation(api('/api/clear-all', {
     method: 'POST', body: JSON.stringify({ confirmation: '清空全部片单' }),
-  }), '全部片单已清空').then(() => $('#confirmDialog').close()).catch(() => {});
+  }), '全部片单、评分和评论已清空').then(() => $('#confirmDialog').close()).catch(() => {});
 });
 
 document.addEventListener('visibilitychange', () => {

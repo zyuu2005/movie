@@ -2,7 +2,7 @@ const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const fs = require('node:fs');
 
-// 单项目、固定双人：内部仅保留一个数据空间，不向用户提供房间概念。
+// 固定双人、单一数据空间；所有资料与影片数据都保存在同一个 SQLite 文件。
 const ROOM_CODE = 'YU_QI_FIXED';
 const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'movie-night.db');
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -10,7 +10,7 @@ fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
 
-// 首次启动自动建表；已有数据库会原样保留。
+// 首次启动自动建表；新增表不会影响已有片单。
 db.exec(`
   CREATE TABLE IF NOT EXISTS rooms (
     code TEXT PRIMARY KEY,
@@ -35,11 +35,43 @@ db.exec(`
     UNIQUE (room_code, owner, tmdb_id)
   );
 
+  CREATE TABLE IF NOT EXISTS profiles (
+    owner TEXT PRIMARY KEY CHECK (owner IN ('A', 'B')),
+    display_name TEXT NOT NULL,
+    avatar BLOB,
+    avatar_mime TEXT,
+    avatar_version INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS ratings (
+    room_code TEXT NOT NULL,
+    tmdb_id INTEGER NOT NULL,
+    owner TEXT NOT NULL CHECK (owner IN ('A', 'B')),
+    score INTEGER NOT NULL CHECK (score BETWEEN 1 AND 5),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (room_code, tmdb_id, owner),
+    FOREIGN KEY (room_code) REFERENCES rooms(code) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_code TEXT NOT NULL,
+    tmdb_id INTEGER NOT NULL,
+    owner TEXT NOT NULL CHECK (owner IN ('A', 'B')),
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (room_code) REFERENCES rooms(code) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_movies_room ON movies(room_code);
+  CREATE INDEX IF NOT EXISTS idx_comments_movie ON comments(room_code, tmdb_id);
 `);
 
 function ensureRoom() {
   db.prepare('INSERT OR IGNORE INTO rooms (code) VALUES (?)').run(ROOM_CODE);
+  db.prepare('INSERT OR IGNORE INTO profiles (owner, display_name) VALUES (?, ?)').run('A', '雨');
+  db.prepare('INSERT OR IGNORE INTO profiles (owner, display_name) VALUES (?, ?)').run('B', '奇');
 }
 
 function touchRoom() {
@@ -58,7 +90,7 @@ function getState() {
     FROM movies WHERE room_code = ? ORDER BY created_at DESC, id DESC
   `).all(ROOM_CODE).map(movie => ({ ...movie, watched: Boolean(movie.watched) }));
 
-  // 在服务端按 tmdbId 自动比对，前端直接消费共同想看结果。
+  // 后端自动比对共同想看。
   const byMovie = new Map();
   for (const movie of movies) {
     if (!byMovie.has(movie.tmdbId)) byMovie.set(movie.tmdbId, {});
@@ -68,11 +100,32 @@ function getState() {
     .filter(([, pair]) => pair.A && pair.B)
     .map(([tmdbId, pair]) => ({ tmdbId, A: pair.A, B: pair.B }));
 
+  const profileRows = db.prepare(`
+    SELECT owner, display_name AS name, avatar_version AS avatarVersion,
+           avatar IS NOT NULL AS hasAvatar
+    FROM profiles
+  `).all();
+  const profiles = {};
+  for (const profile of profileRows) {
+    profiles[profile.owner] = {
+      name: profile.name,
+      avatarUrl: profile.hasAvatar ? `/api/profile/${profile.owner}/avatar?v=${profile.avatarVersion}` : '',
+    };
+  }
+
+  const ratings = db.prepare(`
+    SELECT tmdb_id AS tmdbId, owner, score, updated_at AS updatedAt
+    FROM ratings WHERE room_code = ?
+  `).all(ROOM_CODE);
+  const comments = db.prepare(`
+    SELECT id, tmdb_id AS tmdbId, owner, body, created_at AS createdAt
+    FROM comments WHERE room_code = ? ORDER BY created_at DESC, id DESC
+  `).all(ROOM_CODE);
+
   return {
     revision: room.revision,
     updatedAt: room.updated_at,
-    movies,
-    common,
+    movies, common, profiles, ratings, comments,
     lastDraw: room.last_draw ? JSON.parse(room.last_draw) : null,
   };
 }
