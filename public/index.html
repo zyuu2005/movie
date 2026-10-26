@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f5ef">
+  <meta name="description" content="雨和奇的共享片单，让今晚的电影交给一点温柔的随机。">
+  <title>电影夜 · 双人电影抽签</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="电影夜首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 40 40"><path d="M25.5 7.5a13 13 0 1 0 7 21A14 14 0 0 1 25.5 7.5Z"/><path d="m12 12 1.2 2.8L16 16l-2.8 1.2L12 20l-1.2-2.8L8 16l2.8-1.2Z"/></svg>
+      </span>
+      <span>电影夜<small>OUR MOVIE NIGHT</small></span>
+    </a>
+    <div id="headerRoom" class="header-room hidden">
+      <span class="sync-dot" id="syncDot"></span>
+      <span id="syncText">已同步</span>
+      <button class="text-button" id="switchIdentityBtn">切换身份</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="welcomeView" class="welcome-view">
+      <div class="welcome-copy">
+        <p class="eyebrow">A LITTLE MOVIE, A LITTLE US</p>
+        <h1>不打仗不急眼，<br>乐乐呵呵<span>拼运气</span></h1>
+        <p class="welcome-description">收藏各自的心动，找到共同的期待。<br>选择困难时，就交给一场温柔的抽签。</p>
+        <div class="mini-features" aria-label="产品特点">
+          <span>雨和奇</span><i></i><span>实时同步</span><i></i><span>轻松抽签</span>
+        </div>
+      </div>
+
+      <div class="join-card">
+        <div class="ticket-icon" aria-hidden="true">🎞️</div>
+        <p class="step-label">OUR PRIVATE CINEMA</p>
+        <h2>今天是谁来了？</h2>
+        <p class="muted">选择身份，就能打开你们的共同片单</p>
+        <div id="identitySection" class="identity-section">
+          <label>选择你的身份 <span>仅保存在当前浏览器</span></label>
+          <div class="identity-options">
+            <button type="button" class="identity-button" data-identity="A"><b>雨</b><span>我是雨<small>管理我的想看片单</small></span></button>
+            <button type="button" class="identity-button" data-identity="B"><b>奇</b><span>我是奇<small>管理我的想看片单</small></span></button>
+          </div>
+        </div>
+        <p class="privacy-note">固定双人小空间 · 无需注册登录 · 无需房间码</p>
+      </div>
+    </section>
+
+    <section id="roomView" class="room-view hidden">
+      <div class="room-heading">
+        <div>
+          <p class="eyebrow">YOUR PRIVATE CINEMA</p>
+          <h1>一切都是命运的安排 <span id="identityBadge">雨</span></h1>
+          <p class="room-share">雨和奇的共享片单 · 所有设备自动同步</p>
+        </div>
+        <div class="heading-note">两部手机，一份期待。<br>每一次变化都会自动同步。</div>
+      </div>
+
+      <section id="drawCard" class="draw-card" aria-live="polite">
+        <div id="drawEmpty" class="draw-empty">
+          <div class="draw-symbol" aria-hidden="true"><span>?</span></div>
+          <div class="draw-copy">
+            <p class="eyebrow">TONIGHT'S PICK</p>
+            <h2>今晚看什么？</h2>
+            <p>优先抽取共同想看，没有共同片单时，就从两个人的期待里选。</p>
+          </div>
+          <button class="draw-button" id="drawBtn"><span class="draw-spark">✦</span> 抽一部电影</button>
+        </div>
+        <div id="drawResult" class="draw-result hidden"></div>
+      </section>
+
+      <section class="search-section">
+        <div class="section-heading">
+          <div><span class="section-number">01</span><h2>种下一点期待</h2></div>
+          <p>搜索并加入我的片单</p>
+        </div>
+        <details id="apiSettings" class="api-settings">
+          <summary><span>TMDB API 设置</span><small id="apiKeyStatus">首次使用，请填入 API Key</small></summary>
+          <div class="api-settings-body">
+            <label for="apiKeyInput">你的 TMDB API Key（v3）</label>
+            <div class="key-row"><input id="apiKeyInput" type="password" placeholder="粘贴 32 位 API Key" autocomplete="off"><button id="saveApiKeyBtn" class="secondary-button">保存</button></div>
+            <p>Key 保存在当前浏览器，搜索时仅发送给本项目后端，由后端转发 TMDB，不会存入片单数据库。<a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">去申请 ↗</a></p>
+          </div>
+        </details>
+        <form id="searchForm" class="search-form">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="searchInput" type="search" placeholder="输入电影名称，例如：爱在黎明破晓前" autocomplete="off" required>
+          <button type="submit" class="secondary-button">搜索</button>
+        </form>
+        <div id="searchMessage" class="search-message hidden"></div>
+        <div id="searchResults" class="search-results hidden"></div>
+      </section>
+
+      <section class="library-section">
+        <div class="section-heading library-title">
+          <div><span class="section-number">02</span><h2>我们的想看片单</h2></div>
+          <p id="movieTotal">0 部电影</p>
+        </div>
+        <div class="list-tabs" role="tablist" aria-label="片单分类">
+          <button role="tab" aria-selected="true" data-tab="common" class="active"><span class="tab-heart">♡</span> 共同想看 <b id="commonCount">0</b></button>
+          <button role="tab" aria-selected="false" data-tab="A">雨的片单 <b id="aCount">0</b></button>
+          <button role="tab" aria-selected="false" data-tab="B">奇的片单 <b id="bCount">0</b></button>
+        </div>
+        <div id="listCaption" class="list-caption"></div>
+        <div id="movieList" class="movie-list"></div>
+      </section>
+
+      <details class="room-tools">
+        <summary>片单管理 <span>重置已看标记或清空全部片单</span></summary>
+        <div class="tools-content">
+          <div><p>让所有电影重新参与抽签</p><button id="clearWatchedBtn" class="secondary-button">重置全部已看标记</button></div>
+          <div class="danger-tool"><p>删除雨、奇的全部影片及抽签结果</p><button id="clearAllBtn" class="danger-button">清空全部片单</button></div>
+        </div>
+      </details>
+    </section>
+  </main>
+  <footer>愿每一个平凡的夜晚，都有一部好电影相伴。<span>仅限私人非商用使用</span><span class="tmdb-credit">This product uses the TMDB API but is not endorsed or certified by TMDB.</span></footer>
+
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <form method="dialog">
+      <div class="dialog-icon">!</div>
+      <h2>确定清空全部片单吗？</h2>
+      <p>这会删除雨、奇的所有影片和抽签结果，且无法恢复。请在下方输入「清空全部片单」确认。</p>
+      <input id="confirmInput" type="text" placeholder="清空全部片单" autocomplete="off">
+      <div class="dialog-actions"><button value="cancel" class="secondary-button">再想想</button><button id="confirmClearBtn" value="default" class="danger-button" disabled>确认清空</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "movie-night-for-two",
+  "version": "1.0.0",
+  "private": true,
+  "description": "双人共享片单与电影抽签，仅限私人非商用使用。",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node --test tests/api.test.js tests/persistence.test.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "license": "UNLICENSED"
+}
