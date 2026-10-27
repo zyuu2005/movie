@@ -1,11 +1,27 @@
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 
 // 固定双人、单一数据空间；所有资料与影片数据都保存在同一个 SQLite 文件。
 const ROOM_CODE = 'YU_QI_FIXED';
-const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'movie-night.db');
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+function resolveDbPath() {
+  if (process.env.DB_PATH) return process.env.DB_PATH;
+  const projectDbPath = path.join(__dirname, 'data', 'movie-night.db');
+  try {
+    fs.mkdirSync(path.dirname(projectDbPath), { recursive: true });
+    return projectDbPath;
+  } catch (error) {
+    // SnapDeploy 等容器以非 root 用户运行，/app/data 可能不可写；改用 /tmp。
+    if (error.code !== 'EACCES') throw error;
+    const tempDbPath = path.join(os.tmpdir(), 'movie-night.db');
+    fs.mkdirSync(path.dirname(tempDbPath), { recursive: true });
+    return tempDbPath;
+  }
+}
+
+const dbPath = resolveDbPath();
 
 const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
