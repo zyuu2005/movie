@@ -17,6 +17,8 @@ const state = {
   identity: '', data: null, tab: 'common', pollTimer: null,
   searchResults: [], drawing: false, requestId: 0,
   discussionTmdb: null, avatarData: '',
+  // 抽签筛选的分组、正在设置分组的影片、待恢复的备份数据
+  drawGroup: '', groupMovieId: null, restoreData: null,
 };
 
 function escapeHTML(value) {
@@ -235,9 +237,29 @@ function renderRoom() {
   $('#bCount').textContent = movies.filter(movie => movie.owner === 'B').length;
   $('#movieTotal').textContent = `${new Set(movies.map(movie => movie.tmdbId)).size} 部电影`;
   renderDraw();
+  renderDrawFilter();
   renderList();
   renderSearchResults();
+  renderGroupOptions();
   if ($('#discussionDialog').open) renderDiscussion();
+}
+
+// 抽签范围下拉：全部电影 + 已有分组；保留当前选择。
+function renderDrawFilter() {
+  if (!state.data) return;
+  const groups = state.data.groups || [];
+  if (!groups.includes(state.drawGroup)) state.drawGroup = '';
+  const options = [`<option value="">全部电影</option>`]
+    .concat(groups.map(group => `<option value="${escapeHTML(group)}">${escapeHTML(group)}</option>`));
+  $('#drawGroupFilter').innerHTML = options.join('');
+  $('#drawGroupFilter').value = state.drawGroup;
+}
+
+// 分组弹窗的候选列表。
+function renderGroupOptions() {
+  if (!state.data) return;
+  $('#groupNameOptions').innerHTML = (state.data.groups || [])
+    .map(group => `<option value="${escapeHTML(group)}">`).join('');
 }
 
 function renderDraw() {
@@ -246,7 +268,7 @@ function renderDraw() {
   $('#drawResult').classList.toggle('hidden', !draw);
   if (!draw) return;
   const ownMovie = state.data.movies.find(movie => movie.tmdbId === draw.tmdbId && movie.owner === state.identity);
-  const scope = draw.scope === 'common' ? '来自共同想看' : '来自两个人的片单';
+  const scope = `${draw.scope === 'common' ? '来自共同想看' : '来自两个人的片单'}${draw.group ? ` · 分组「${escapeHTML(draw.group)}」` : ''}`;
   const watchedButton = ownMovie
     ? `<button class="secondary-button" data-draw-watched="${ownMovie.id}" data-watched="${!ownMovie.watched}">${ownMovie.watched ? '取消已看标记' : '标记为已看完'}</button>`
     : '';
@@ -279,6 +301,7 @@ function movieCard(movie, isCommon = false) {
     : `${movie.watched ? '<span class="badge watched-badge">已看完</span>' : '<span class="badge">未看</span>'}`;
   if (average) badges += `<span class="badge discussion-badge">★ ${average}</span>`;
   if (comments.length) badges += `<span class="badge">💬 ${comments.length}</span>`;
+  if (movie.groupName) badges += `<span class="badge group-badge">▫ ${escapeHTML(movie.groupName)}</span>`;
   return `<article class="movie-card ${isCommon ? (bothWatched ? 'watched' : '') : (movie.watched ? 'watched' : '')}">
     ${posterMarkup(movie, 'movie-poster')}
     <div class="movie-info">
@@ -288,7 +311,8 @@ function movieCard(movie, isCommon = false) {
       <div class="movie-badges">${badges}</div>
       <div class="movie-actions">
         <button class="discuss-button" data-discuss-tmdb="${movie.tmdbId}">★ 评分与评论</button>
-        ${canManage ? `<button data-watch-id="${movie.id}" data-watched="${!movie.watched}">${movie.watched ? '↶ 取消已看' : '✓ 标记已看完'}</button>
+        ${canManage ? `<button data-group-id="${movie.id}">▫ 分组</button>
+        <button data-watch-id="${movie.id}" data-watched="${!movie.watched}">${movie.watched ? '↶ 取消已看' : '✓ 标记已看完'}</button>
         <button class="delete-movie" data-delete-id="${movie.id}" data-title="${escapeHTML(movie.title)}" aria-label="删除${escapeHTML(movie.title)}">删除</button>` : ''}
       </div>
     </div>
@@ -441,7 +465,7 @@ async function drawMovie() {
   buttons.forEach(button => { button.disabled = true; button.classList.add('drawing'); });
   try {
     const [data] = await Promise.all([
-      api('/api/draw', { method: 'POST', body: JSON.stringify({ owner: state.identity }) }),
+      api('/api/draw', { method: 'POST', body: JSON.stringify({ owner: state.identity, group: state.drawGroup }) }),
       new Promise(resolve => setTimeout(resolve, 650)),
     ]);
     state.requestId++;
@@ -455,6 +479,64 @@ async function drawMovie() {
     state.drawing = false;
     buttons.forEach(button => { button.disabled = false; button.classList.remove('drawing'); });
   }
+}
+
+// ---------- 电影分组 ----------
+function openGroupDialog(movieId) {
+  const movie = state.data?.movies.find(item => item.id === movieId);
+  if (!movie) return;
+  state.groupMovieId = movieId;
+  $('#groupNameInput').value = movie.groupName || '';
+  $('#groupDialog').showModal();
+  setTimeout(() => $('#groupNameInput').focus(), 100);
+}
+
+async function saveGroup(name) {
+  await applyMutation(api(`/api/movies/${state.groupMovieId}`, {
+    method: 'PATCH', body: JSON.stringify({ owner: state.identity, group: name }),
+  }), name ? `已加入分组「${name}」` : '已移出分组');
+}
+
+// ---------- 备份：导出与恢复 ----------
+async function exportBackup() {
+  const button = $('#exportBackupBtn');
+  button.disabled = true;
+  try {
+    const backup = await api('/api/backup');
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `movie-night-backup-${stamp}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast('备份文件已开始下载');
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function prepareRestore(file) {
+  if (!file) return;
+  let backup;
+  try {
+    backup = JSON.parse(await file.text());
+  } catch {
+    toast('这不是有效的 JSON 文件');
+    return;
+  }
+  if (!backup || backup.format !== 'movie-night-backup') {
+    toast('这不是电影夜导出的备份文件');
+    return;
+  }
+  state.restoreData = backup;
+  $('#restoreConfirmInput').value = '';
+  $('#confirmRestoreBtn').disabled = true;
+  $('#restoreConfirmDialog').showModal();
+  setTimeout(() => $('#restoreConfirmInput').focus(), 100);
 }
 
 // ---------- 页面事件 ----------
@@ -534,13 +616,45 @@ $('#movieList').addEventListener('click', event => {
   const watch = event.target.closest('[data-watch-id]');
   const remove = event.target.closest('[data-delete-id]');
   const discuss = event.target.closest('[data-discuss-tmdb]');
+  const group = event.target.closest('[data-group-id]');
   if (discuss) openDiscussion(discuss.dataset.discussTmdb);
+  if (group) openGroupDialog(Number(group.dataset.groupId));
   if (watch) updateWatched(Number(watch.dataset.watchId), watch.dataset.watched === 'true').catch(() => {});
   if (remove && window.confirm(`确定从自己的片单删除《${remove.dataset.title}》吗？`)) {
     applyMutation(api(`/api/movies/${remove.dataset.deleteId}`, {
       method: 'DELETE', body: JSON.stringify({ owner: state.identity }),
     }), '已从片单删除').catch(() => {});
   }
+});
+
+$('#groupForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const name = $('#groupNameInput').value.trim().slice(0, 30);
+  saveGroup(name)
+    .then(() => $('#groupDialog').close())
+    .catch(() => {});
+});
+$('#drawGroupFilter').addEventListener('change', event => {
+  state.drawGroup = event.target.value;
+});
+$('#exportBackupBtn').addEventListener('click', exportBackup);
+$('#importBackupBtn').addEventListener('click', () => $('#backupFileInput').click());
+$('#backupFileInput').addEventListener('change', event => {
+  prepareRestore(event.target.files[0]);
+  event.target.value = '';
+});
+$('#restoreConfirmInput').addEventListener('input', event => {
+  $('#confirmRestoreBtn').disabled = event.target.value.trim() !== '恢复备份';
+});
+$('#confirmRestoreBtn').addEventListener('click', event => {
+  event.preventDefault();
+  if ($('#restoreConfirmInput').value.trim() !== '恢复备份' || !state.restoreData) return;
+  applyMutation(api('/api/restore', {
+    method: 'POST', body: JSON.stringify(state.restoreData),
+  }), '已从备份恢复全部片单').then(() => {
+    state.restoreData = null;
+    $('#restoreConfirmDialog').close();
+  }).catch(() => {});
 });
 
 $('#drawBtn').addEventListener('click', drawMovie);

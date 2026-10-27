@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { db, dbPath, ROOM_CODE, ensureRoom, touchRoom, getState } = require('./db');
+const { db, dbPath, ROOM_CODE, ensureRoom, touchRoom, getState, getBackup, restoreBackup } = require('./db');
 
 const app = express();
 app.disable('x-powered-by');
@@ -38,6 +38,17 @@ function getOwnedMovie(req, res) {
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.get('/api/state', (_req, res) => res.json(getState()));
 
+// 备份仅包含片单、资料、评分、评论和抽签结果，不包含任何人的 TMDB Key。
+app.get('/api/backup', (_req, res) => res.json(getBackup()));
+app.post('/api/restore', (req, res) => {
+  try {
+    restoreBackup(req.body);
+    res.json(getState());
+  } catch (error) {
+    res.status(400).json({ error: error.message || '备份文件无法恢复' });
+  }
+});
+
 // 个人资料：默认雨/奇，可分别修改名字和头像，所有设备同步。
 app.post('/api/profile', (req, res) => {
   if (!validOwner(req, res)) return;
@@ -71,7 +82,8 @@ app.get('/api/profile/:owner/avatar', (req, res) => {
   if (!profile || !profile.avatar) return res.status(404).end();
   res.set('Content-Type', profile.avatar_mime);
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.send(profile.avatar);
+  // node:sqlite 可能返回 Uint8Array；显式转 Buffer，避免 Express 当成 JSON 对象输出。
+  res.send(Buffer.from(profile.avatar));
 });
 
 // TMDB 后端代理：Key 仅用于本次上游请求，不写日志、不入库。
@@ -126,8 +138,13 @@ app.post('/api/movies', (req, res) => {
 app.patch('/api/movies/:id', (req, res) => {
   const movie = getOwnedMovie(req, res);
   if (!movie) return;
-  if (typeof req.body.watched !== 'boolean') return res.status(400).json({ error: '已看状态格式不正确' });
-  db.prepare('UPDATE movies SET watched = ? WHERE id = ?').run(req.body.watched ? 1 : 0, movie.id);
+  if (typeof req.body.watched === 'boolean') {
+    db.prepare('UPDATE movies SET watched = ? WHERE id = ?').run(req.body.watched ? 1 : 0, movie.id);
+  } else if (typeof req.body.group === 'string') {
+    db.prepare('UPDATE movies SET group_name = ? WHERE id = ?').run(cleanText(req.body.group, 30), movie.id);
+  } else {
+    return res.status(400).json({ error: '请提供要修改的已看状态或分组' });
+  }
   touchRoom();
   res.json(getState());
 });
@@ -186,26 +203,34 @@ app.delete('/api/comments/:id', (req, res) => {
 
 app.post('/api/draw', (req, res) => {
   if (!validOwner(req, res)) return;
-  const movies = db.prepare('SELECT * FROM movies WHERE room_code = ?').all(ROOM_CODE);
+  const group = cleanText(req.body.group, 30);
+  const allMovies = db.prepare('SELECT * FROM movies WHERE room_code = ?').all(ROOM_CODE);
   const grouped = new Map();
-  for (const movie of movies) {
+  for (const movie of allMovies) {
     if (!grouped.has(movie.tmdb_id)) grouped.set(movie.tmdb_id, {});
     grouped.get(movie.tmdb_id)[movie.owner] = movie;
   }
+  // 分组只决定「哪些电影进入候选」：同一部只要有一方的拷贝在这个分组即可；
+  // 共同/ fallback 的优先级判断仍基于双方完整记录，规则与全量抽签一致。
+  const inGroup = pair => !group || pair.A?.group_name === group || pair.B?.group_name === group;
   const common = [];
   const fallback = [];
   for (const pair of grouped.values()) {
-    const candidate = pair.A || pair.B;
+    if (!inGroup(pair)) continue;
+    const candidate = [pair.A, pair.B].find(movie => movie && (!group || movie.group_name === group))
+      || pair.A || pair.B;
     if (pair.A && pair.B && !pair.A.watched && !pair.B.watched) common.push(candidate);
     if ((pair.A && !pair.A.watched) || (pair.B && !pair.B.watched)) fallback.push(candidate);
   }
   const pool = common.length ? common : fallback;
-  if (!pool.length) return res.status(409).json({ error: '还没有未看完的影片，先添加几部想看的电影吧' });
+  if (!pool.length) {
+    return res.status(409).json({ error: group ? `「${group}」分组里没有可抽取的未看完影片` : '还没有未看完的影片，先添加几部想看的电影吧' });
+  }
 
   const picked = pool[crypto.randomInt(pool.length)];
   const lastDraw = {
     movieId: picked.id, tmdbId: picked.tmdb_id, title: picked.title, year: picked.year,
-    overview: picked.overview, posterPath: picked.poster_path,
+    overview: picked.overview, posterPath: picked.poster_path, group,
     scope: common.length ? 'common' : 'all', drawnBy: req.body.owner, drawnAt: new Date().toISOString(),
   };
   db.prepare('UPDATE rooms SET last_draw = ? WHERE code = ?').run(JSON.stringify(lastDraw), ROOM_CODE);
